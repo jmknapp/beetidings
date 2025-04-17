@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Air Sensor Data Plots</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1"></script>
+  <script src="https://cdn.jsdelivr.net/npm/suncalc@1.9.0/suncalc.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+  <style>
+    .has-data {
+      background-color: #cce5ff !important;
+      border-radius: 50%;
+      box-shadow: inset 0 0 0 2px #007bff;
+    }
+  </style>
+  <style>
+    body {
+      background-image: url('combbackground.png');
+      background-repeat: repeat;
+      background-size: auto;
+    }
+  </style>
+  <style>
+    #loadingOverlay {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 24px;
+      font-weight: bold;
+      color: black;
+      background-color: rgba(255, 255, 255, 0.85);
+      padding: 1em 2em;
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+      z-index: 9999;
+      display: none; /* hidden by default */
+    }
+  </style>
+  <style>
+    #loadingOverlay {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 9999;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 2em 3em;
+      border-radius: 10px;
+      display: none;
+      text-align: center;
+      box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+    }
+  
+    .spinner {
+      width: 40px;
+      height: 40px;
+      margin: 0 auto 10px;
+      border: 5px solid #ccc;
+      border-top-color: #333;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+  
+    .loading-text {
+      font-size: 20px;
+      color: #333;
+    }
+  
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+
+</head>
+<body>
+  <h2>Air sensor data</h2>
+  <div style="background-color: white; display: inline-block; border: 2px solid black; padding: 5px;">current location: Ohio (indoor)</div>
+  <p></p>
+  <div id="loadingOverlay">
+    <div class="spinner"></div>
+    <div class="loading-text">Loading...</div>
+  </div>
+
+  <label for="startDate">Start Date:</label>
+  <input type="text" id="startDate" placeholder="Start Date">
+  <label for="endDate">End Date:</label>
+  <input type="text" id="endDate" placeholder="End Date">
+  <button onclick="fetchData()">Filter</button>
+  <button onclick="exportToCSV()">Export CSV</button>
+  <button onclick="downloadChart()">Download Chart Image</button>
+  <label>
+    <input type="checkbox" id="shadeToggle">
+      day/night shading
+  </label>
+
+
+  <hr />
+  <h3>Particulate Matter (derived from Sensirion SEN55: PM1.0, PM2.5, PM4.0, PM10.0)</h3>
+  <canvas id="pmChart" width="1200" height="400"></canvas>
+
+  <hr />
+  <h3>VOC and NOx (Sensirion SEN55)</h3>
+  <canvas id="vocNoxChart" width="1200" height="400"></canvas>
+
+  <hr />
+  <h3>Temperature and Humidity (Sensirion SEN55)</h3>
+  <canvas id="tempHumidityChart" width="1200" height="400"></canvas>
+
+  <script>
+    let originalData = [];
+    let chartRefs = { pm: null, vocNox: null, tempHumidity: null };
+
+    Chart.defaults.color = 'black'; // all text (axis labels, legends, tooltips)
+    Chart.defaults.borderColor = 'black'; // axes border lines
+    Chart.defaults.plugins.legend.labels.color = 'black';
+  
+    async function fetchData() {
+      showLoadingMessage(true);
+
+      const start = document.getElementById('startDate').value;
+      const end = document.getElementById('endDate').value;
+
+      const params = new URLSearchParams({
+        start: start || new Date().toISOString().substring(0, 10),
+        end: end || new Date(Date.now() + 86400000).toISOString().substring(0, 10)
+      });
+
+      const response = await fetch('data.php?' + params.toString());
+      const data = await response.json();
+
+      originalData = data;
+      renderCharts(data);
+
+      showLoadingMessage(false);
+    }
+
+    function renderCharts(data) {
+      const timestamps = data.map(row => row.timestamp);
+
+      // Determine appropriate x-axis label time interval
+      const start = luxon.DateTime.fromISO(timestamps[0]);
+      const end = luxon.DateTime.fromISO(timestamps[timestamps.length - 1]);
+      const durationHours = end.diff(start, 'hours').hours;
+
+      let timeUnit = 'hour';
+      let stepSize = 1 ;
+      if (durationHours > 24) {
+        stepSize = 6;
+      } else if (durationHours > 100) {
+        stepSize = 12;
+      }
+
+      const timeOptions = {
+        type: 'time',
+        time: {
+          unit: timeUnit,
+          stepSize: stepSize,
+          displayFormats: {
+            hour: 'MMMdd HH:mm'
+          },
+          tooltipFormat: 'ff'
+        },
+        adapters: { date: { zone: 'America/New_York' } },
+        ticks: {
+          source: 'auto',
+          maxRotation: 90,
+          minRotation: 45,
+          callback: val => {
+            const dt = luxon.DateTime.fromMillis(val).setZone('America/New_York');
+            const tz = dt.offset === -240 ? 'EDT' : 'EST';
+            return dt.toFormat('MMMdd HH:mm') + tz;
+          }
+        },
+        grid: {
+          drawOnChartArea: true,
+          color: (ctx) => {
+            const date = new Date(ctx.tick.value);
+            return date.getHours() === 0 ? '#ccc' : '#e0e0e0';
+          }
+        }
+      };
+
+      const createChart = (refKey, canvasId, datasets, yOptions) => {
+        if (chartRefs[refKey]) {
+          chartRefs[refKey].destroy();
+        }
+      
+        const useShading = document.getElementById('shadeToggle')?.checked;
+        const pluginList = [midnightLinesPlugin];
+        pluginList.unshift(backgroundAndDaylightPlugin);
+      
+        chartRefs[refKey] = new Chart(document.getElementById(canvasId), {
+          type: 'line',
+          data: {
+            labels: timestamps,
+            datasets: datasets
+          },
+          options: {
+            scales: {
+              x: {
+                ...timeOptions,
+                grid: {
+                  ...timeOptions.grid,
+                  color: 'black'
+                },
+                ticks: {
+                  color: '#000'
+                }
+              },
+              ...Object.fromEntries(
+                Object.entries(yOptions).map(([axisKey, axisOpts]) => [
+                  axisKey,
+                  {
+                    ...axisOpts,
+                    grid: {
+                      ...(axisOpts.grid || {}),
+                      color: 'black'
+                    },
+                    ticks: {
+                      color: '#000'
+                    }
+                  }
+                ])
+              )
+            },
+            plugins: {
+              legend: {
+                display: true,
+                labels: {
+                  usePointStyle: true,
+                  pointStyle: 'line',
+                  color: '#000'
+                }
+              },
+              tooltip: {
+                mode: 'index',
+                intersect: false
+              }
+            },
+            interaction: {
+              mode: 'index',
+              intersect: false
+            }
+          },
+          plugins: pluginList
+        });
+      };
+
+      createChart('pm', 'pmChart', [
+        { label: '0.3 < d < 1μm    ', data: data.map(r => r.pm1p0), fill: false, borderColor: 'red', borderWidth: 1, pointRadius: 0, tension: 0.1 },
+        { label: '1 < d < 2.5    ', data: data.map(r => r.pm2p5), fill: false, borderColor: 'blue', borderWidth: 2, pointRadius: 0, tension: 0.1 },
+        { label: '2.5 < d < 4    ', data: data.map(r => r.pm4p0), fill: false, borderColor: 'orange', borderWidth: 3, pointRadius: 0, tension: 0.1 },
+        { label: '4 < d < 10    ', data: data.map(r => r.pm10p0), fill: false, borderColor: 'black', borderWidth: 4, pointRadius: 0, tension: 0.1 }
+      ], {
+        y: { type: 'logarithmic', title: { display: true, text: 'Concentration (µg/m³)' }, min: 0.1 }
+      });
+
+      createChart('vocNox', 'vocNoxChart', [
+        { label: 'VOC', data: data.map(r => r.voc), fill: false, borderColor: 'orange', pointRadius: 0, tension: 0.1 },
+        { label: 'NOx', data: data.map(r => r.nox), fill: false, borderColor: 'blue', pointRadius: 0, tension: 0.1 }
+      ], {
+        y: { title: { display: true, text: 'Sensirion Index algorithm' } }
+      });
+
+      createChart('tempHumidity', 'tempHumidityChart', [
+        { label: 'Temperature (°C)', data: data.map(r => r.temperature), fill: false, borderColor: 'red', pointRadius: 0, tension: 0.1, yAxisID: 'y-temp' },
+        { label: 'Humidity (%)', data: data.map(r => r.humidity), fill: false, borderColor: 'blue', pointRadius: 0, tension: 0.1, yAxisID: 'y-humidity' }
+      ], {
+        'y-temp': { type: 'linear', position: 'right', title: { display: true, text: 'Temperature (°C)' } },
+        'y-humidity': { type: 'linear', position: 'left', title: { display: true, text: 'Humidity (%)' }, grid: { drawOnChartArea: false } }
+      });
+    }
+
+    document.getElementById('shadeToggle').addEventListener('change', () => {
+      renderCharts(originalData); // regenerate with/without shading
+    });
+
+
+    function exportToCSV() {
+      const rows = ["local time,PM1.0 (µg/m³),PM2.5 (µg/m³),PM4.0 (µg/m³),PM10.0 (µg/m³),Humidity (%),Temperature (°C),VOC Index,NOx Index"];
+
+      originalData.forEach(row => {
+        rows.push([row.timestamp, row.pm1p0, row.pm2p5, row.pm4p0, row.pm10p0, row.humidity, row.temperature, row.voc, row.nox].join(","));
+      });
+      const bom = '\uFEFF';
+      const blob = new Blob([bom + rows.join("\n")], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = 'sen55_data.csv';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    function downloadChart() {
+      const charts = [
+        document.getElementById('pmChart'),
+        document.getElementById('vocNoxChart'),
+        document.getElementById('tempHumidityChart')
+      ];
+    
+      const width = charts[0].width;
+      const height = charts.reduce((sum, c) => sum + c.height, 0);
+    
+      const combinedCanvas = document.createElement('canvas');
+      combinedCanvas.width = width;
+      combinedCanvas.height = height;
+    
+      const ctx = combinedCanvas.getContext('2d');
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, combinedCanvas.width, combinedCanvas.height);
+      let yOffset = 0;
+    
+      charts.forEach(chart => {
+        ctx.drawImage(chart, 0, yOffset);
+        yOffset += chart.height;
+      });
+    
+      const link = document.createElement('a');
+      link.href = combinedCanvas.toDataURL('image/png');
+      link.download = 'all_charts.png';
+      link.click();
+    }
+
+    function showLoadingMessage(show = true) {
+      const overlay = document.getElementById('loadingOverlay');
+      if (overlay) {
+        overlay.style.display = show ? 'block' : 'none';
+      }
+    }
+
+    async function getAvailableDates() {
+      const response = await fetch('data.php?datesOnly=1');
+      return await response.json(); // Returns an array of 'YYYY-MM-DD' strings
+    }
+ 
+    function initDatePickers(availableDates) {
+      const highlightDates = availableDates.map(dateStr => new Date(dateStr).setHours(0, 0, 0, 0));
+  
+      ['startDate', 'endDate'].forEach(id => {
+          flatpickr(`#${id}`, {
+              dateFormat: "Y-m-d",
+              onDayCreate: function(dObj, dStr, fp, dayElem) {
+                  const dayTimestamp = dayElem.dateObj.setHours(0, 0, 0, 0);
+                  if (highlightDates.includes(dayTimestamp)) {
+                      dayElem.classList.add('has-data');
+                  }
+              }
+          });
+      });
+    }
+
+    getAvailableDates().then(dates => {
+      initDatePickers(dates);
+    });
+
+    function getLocalDate(offset = 0) {
+      const today = new Date();
+      today.setDate(today.getDate() + offset);
+
+      const year = today.getFullYear();
+      const month = String(today.getMonth() + 1).padStart(2, '0');
+      const day = String(today.getDate()).padStart(2, '0');
+
+      return `${year}-${month}-${day}`;
+    }
+
+    const midnightLinesPlugin = {
+      id: 'midnightLines',
+      beforeDraw(chart) {
+        const { ctx, chartArea, scales } = chart;
+        if (!scales.x) return;
+
+        ctx.save();
+        ctx.strokeStyle = '#666';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+
+        scales.x.ticks.forEach(tick => {
+          const dt = luxon.DateTime.fromMillis(tick.value).setZone('America/New_York');
+          if (dt.hour === 0 && dt.minute === 0) {
+            const x = scales.x.getPixelForValue(tick.value);
+            ctx.beginPath();
+            ctx.moveTo(x, chartArea.top);
+            ctx.lineTo(x, chartArea.bottom);
+            ctx.stroke();
+          }
+        });
+
+        ctx.restore();
+      }
+    };
+
+    const backgroundAndDaylightPlugin = {
+      id: 'backgroundAndDaylight',
+      beforeDraw(chart) {
+        const { ctx, chartArea, scales } = chart;
+        if (!scales.x || !chartArea) return;
+    
+        const showShading = document.getElementById('shadeToggle')?.checked;
+    
+        ctx.save();
+    
+        // chart background color with no shading
+        ctx.fillStyle = 'rgb(150, 150, 150, 1)';
+        ctx.fillRect(
+          chartArea.left,
+          chartArea.top,
+          chartArea.right - chartArea.left,
+          chartArea.bottom - chartArea.top
+        );
+    
+        // === If checkbox is checked, draw daylight shading ===
+        if (showShading) {
+          ctx.fillStyle = 'rgb(200, 200, 200, 1)';
+    
+          const seenDays = new Set();
+          scales.x.ticks.forEach(tick => {
+            const dt = luxon.DateTime.fromMillis(tick.value).setZone('America/New_York');
+            const dateStr = dt.toFormat('yyyy-MM-dd');
+            if (seenDays.has(dateStr)) return;
+            seenDays.add(dateStr);
+    
+            const times = SunCalc.getTimes(new Date(dateStr + 'T12:00:00'), 40.7128, -74.0060);
+    
+            const sunrise = times.sunrise?.getTime();
+            const sunset = times.sunset?.getTime();
+    
+            if (!isNaN(sunrise) && !isNaN(sunset)) {
+              const sunriseX = scales.x.getPixelForValue(sunrise);
+              const sunsetX = scales.x.getPixelForValue(sunset);
+    
+              const clippedSunriseX = Math.max(sunriseX, chartArea.left);
+              const clippedSunsetX = Math.max(sunsetX, chartArea.left);
+    
+              ctx.fillRect(
+                clippedSunriseX,
+                chartArea.top,
+                clippedSunsetX - clippedSunriseX,
+                chartArea.bottom - chartArea.top
+              );
+            }
+          });
+    
+          ctx.globalAlpha = 1.0;
+        }
+    
+        ctx.restore();
+      }
+    };
+
+    fetchData();
+  </script>
+</body>
+<footer>
+  <hr />
+  <h2>References</h2>
+  <ol>
+    <li><a href="https://sensirion.com" target="_blank" rel="noopener noreferrer">Sensirion Official Website</a></li>
+    <li><a href="https://sensirion.com/products/catalog/SEN55" target="_blank" rel="noopener noreferrer">SEN55 Datasheet</a></li>
+    <li><a href="https://sensirion.com/products/catalog/SCD41" target="_blank" rel="noopener noreferrer">SCD41 Carbon Dioxide Sensor Datasheet</a></li>
+    <li><a href="https://www.dfrobot.com/product-2052.html" target="_blank" rel="noopener noreferrer">DFRobot SEN0322 Oxygen Sensor Datasheet</a></li>
+    <li>Nadzir, U. R., Mohd, Sham, S. Z., Bahri, S. B., Borah, J., Majumdar, S., Lei, T. M., Ali, S. H., Wahab, M. I., & Noor Hidayah Mohd Yunus. (2023). Evaluations of low-cost air quality sensors for Particulate matter (PM2.5) under indoor and outdoor conditions. Sensors and Materials, 35(8), 2881. <a href="https://doi.org/10.18494/sam4393" target="_blank" rel="noopener noreferrer">https://doi.org/10.18494/sam4393</a> </li>
+  </ol>
+  <p><strong>Joe Knapp</strong> <a href="&mailto:jmknapp@gmail.com">email</a>
+  <br><em>April 2025</em></br></p>
+</footer>
+</html>
