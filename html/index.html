@@ -125,8 +125,10 @@
       const end = document.getElementById('endDate').value;
 
       const params = new URLSearchParams({
-        start: start || new Date().toISOString().substring(0, 10),
-        end: end || new Date(Date.now() + 86400000).toISOString().substring(0, 10)
+        //start: start || new Date().toISOString().substring(0, 10),
+        //end: end || new Date(Date.now() + 86400000).toISOString().substring(0, 10)
+        start: start || getLocalDate(0),
+        end: end || getLocalDate(1)
       });
 
       const response = await fetch('data.php?' + params.toString());
